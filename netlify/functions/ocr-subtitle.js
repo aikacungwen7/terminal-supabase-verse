@@ -2,49 +2,106 @@
 // OCR Subtitle extraction function using Tesseract.js
 const fetch = require('node-fetch');
 const { createWorker } = require('tesseract.js');
+const formidable = require('formidable');
+const fs = require('fs');
+const path = require('path');
+const util = require('util');
+
+// Convert fs.readFile to Promise-based
+const readFile = util.promisify(fs.readFile);
+
+// Function to handle multipart form data
+const parseMultipartForm = (event) => {
+  return new Promise((resolve, reject) => {
+    // Create a temporary directory for uploaded files
+    const tmpDir = path.join('/tmp', 'uploads');
+    if (!fs.existsSync(tmpDir)) {
+      fs.mkdirSync(tmpDir, { recursive: true });
+    }
+
+    const form = formidable({
+      multiples: false,
+      uploadDir: tmpDir,
+      keepExtensions: true,
+    });
+
+    form.parse(event, (err, fields, files) => {
+      if (err) return reject(err);
+      resolve({ fields, files });
+    });
+  });
+};
 
 exports.handler = async function(event, context) {
   try {
-    // Ensure request is POST method
-    if (event.httpMethod !== "POST") {
-      return {
-        statusCode: 405,
-        body: JSON.stringify({ error: "Method Not Allowed" })
-      };
-    }
+    // Determine request type (JSON or form data)
+    const isFormData = event.headers['content-type']?.includes('multipart/form-data');
+    
+    let url, language, imageBuffer;
+    
+    if (isFormData) {
+      // Handle file upload
+      try {
+        const { fields, files } = await parseMultipartForm(event);
+        language = fields.language || 'ind';
+        
+        // Read the uploaded file
+        const file = files.file;
+        
+        if (!file) {
+          return {
+            statusCode: 400,
+            body: JSON.stringify({ error: "File tidak ditemukan. Silahkan upload file gambar atau video." })
+          };
+        }
 
-    // Get video/image URL from request body
-    const { url, language } = JSON.parse(event.body || '{}');
-    
-    if (!url) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "URL tidak ada. Silahkan masukkan URL gambar atau video." })
-      };
-    }
+        // For now, we're handling the file as an image directly
+        // In a production app, you'd process video files to extract frames with subtitles
+        imageBuffer = await readFile(file.filepath);
+        
+        // Clean up temporary file
+        fs.unlinkSync(file.filepath);
+      } catch (formError) {
+        console.error("Form processing error:", formError);
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: "Gagal memproses file upload: " + formError.message })
+        };
+      }
+    } else {
+      // Handle JSON request with URL
+      if (event.httpMethod !== "POST") {
+        return {
+          statusCode: 405,
+          body: JSON.stringify({ error: "Method Not Allowed" })
+        };
+      }
 
-    console.log(`Processing OCR on ${url} with language: ${language || 'ind'}`);
-    
-    let imageUrl = url;
-    
-    // If video URL, we need to get screenshot first
-    // This is a simplified approach - in production you'd use video frame extraction
-    if (url.match(/\.(mp4|webm|mov|avi)$/i)) {
-      // For demo, we'll assume URL is direct to an image frame with subtitles
-      console.log("Video URL detected. In production, this would extract a frame.");
-      // Here you would implement video frame extraction
-    }
-    
-    // Perform OCR using Tesseract.js
-    try {
-      // Download the image first
-      const imageResponse = await fetch(imageUrl);
+      // Get video/image URL from request body
+      const requestBody = JSON.parse(event.body || '{}');
+      url = requestBody.url;
+      language = requestBody.language || 'ind';
+      
+      if (!url) {
+        return {
+          statusCode: 400,
+          body: JSON.stringify({ error: "URL tidak ada. Silahkan masukkan URL gambar atau video." })
+        };
+      }
+
+      console.log(`Processing OCR on ${url} with language: ${language || 'ind'}`);
+      
+      // Download the image
+      const imageResponse = await fetch(url);
       if (!imageResponse.ok) {
         throw new Error(`Failed to fetch image: ${imageResponse.statusText}`);
       }
       
-      const imageBuffer = await imageResponse.buffer();
-      
+      imageBuffer = await imageResponse.buffer();
+    }
+    
+    // Process using Tesseract
+    try {      
       // Initialize Tesseract worker
       const worker = await createWorker();
       
@@ -76,7 +133,7 @@ exports.handler = async function(event, context) {
           detected_text: subtitleText,
           confidence: data.confidence,
           language: langCode,
-          source_url: url
+          source_url: url || "uploaded_file"
         })
       };
     } catch (ocrError) {

@@ -6,9 +6,28 @@
 
 [functions]
   node_bundler = "esbuild"
+  # Increase function timeout for video processing
+  timeout = 30
 
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
 
+# Set up proper file upload limits
+[build.processing.images]
+  compress = true
+
+[build.processing]
+  skip_processing = false
+
+# Increase payload size for file uploads
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    # Increase upload size limit to 20MB
+    Content-Length-Limit = "20971520"
