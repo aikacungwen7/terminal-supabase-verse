@@ -18,6 +18,8 @@ const Terminal = () => {
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [user, setUser] = useState<any>(null);
+  const [nodeMode, setNodeMode] = useState(false);
+  const [nodeCode, setNodeCode] = useState('');
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
@@ -34,7 +36,9 @@ const Terminal = () => {
       whoami - Show current user
       logout - Logout from the system
       custom - List custom commands
-      create-command [name] "[description]" "[script]" - Create a custom command`,
+      create-command [name] "[description]" "[script]" - Create a custom command
+      node - Enter Node.js mode (run JavaScript code)
+      exit - Exit from Node.js mode`,
     clear: () => {
       setHistory([]);
       return '';
@@ -105,6 +109,53 @@ const Terminal = () => {
       } catch (error: any) {
         return `Error creating command: ${error.message}`;
       }
+    },
+    node: () => {
+      setNodeMode(true);
+      setNodeCode('');
+      return `Node.js mode entered. Type your JavaScript code, then type 'run' to execute or 'exit' to quit.
+Example: 
+console.log("Hello World");
+const sum = (a, b) => a + b;
+sum(5, 3)`;
+    },
+    exit: () => {
+      if (nodeMode) {
+        setNodeMode(false);
+        return 'Exited Node.js mode.';
+      }
+      return 'Not in a special mode to exit from.';
+    },
+    run: async () => {
+      if (!nodeMode || !nodeCode.trim()) {
+        return 'No code to run or not in Node.js mode.';
+      }
+      
+      try {
+        const response = await fetch('/api/run-node', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ code: nodeCode }),
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+          return `Error: ${data.error}\n${data.output || ''}`;
+        }
+        
+        let result = data.output || '';
+        if (data.result !== undefined) {
+          if (result) result += '\n';
+          result += `=> ${data.result}`;
+        }
+        
+        return result || 'Code executed with no output.';
+      } catch (error: any) {
+        return `Failed to execute: ${error.message}`;
+      }
     }
   };
 
@@ -163,6 +214,33 @@ const Terminal = () => {
   // Execute a command
   const executeCommand = async (cmdString: string) => {
     if (!cmdString.trim()) return;
+    
+    // Special handling for Node.js mode
+    if (nodeMode && cmdString !== 'run' && cmdString !== 'exit') {
+      // Add the line to the Node.js code buffer
+      setNodeCode(prev => prev + (prev ? '\n' : '') + cmdString);
+      
+      // Add command to history without saving to database
+      const newCommand = {
+        id: crypto.randomUUID(),
+        command: cmdString,
+        output: null,
+        executed_at: new Date().toISOString(),
+        success: true
+      };
+      
+      setHistory(prev => [...prev, newCommand]);
+      setInput('');
+      
+      // Scroll to bottom
+      setTimeout(() => {
+        if (terminalRef.current) {
+          terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+        }
+      }, 0);
+      
+      return;
+    }
     
     setLoading(true);
     
@@ -320,6 +398,14 @@ Welcome to Terminal Web. Type 'help' for available commands.
           <div className="text-gray-400">
             Connected as: {user?.email || 'Not logged in'}
           </div>
+          {nodeMode && (
+            <div className="mt-2 p-2 bg-gray-900 border border-green-800 rounded">
+              <div className="text-yellow-400 font-bold">Node.js Mode</div>
+              <div className="text-gray-400 text-sm">
+                Type 'run' to execute, 'exit' to quit
+              </div>
+            </div>
+          )}
         </div>
         
         {/* Command history */}
