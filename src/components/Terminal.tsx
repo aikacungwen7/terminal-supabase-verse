@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
@@ -20,6 +19,9 @@ const Terminal = () => {
   const [user, setUser] = useState<any>(null);
   const [nodeMode, setNodeMode] = useState(false);
   const [nodeCode, setNodeCode] = useState('');
+  const [ocrMode, setOcrMode] = useState(false);
+  const [ocrUrl, setOcrUrl] = useState('');
+  const [ocrLanguage, setOcrLanguage] = useState('eng');
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
@@ -38,7 +40,8 @@ const Terminal = () => {
       custom - List custom commands
       create-command [name] "[description]" "[script]" - Create a custom command
       node - Enter Node.js mode (run JavaScript code)
-      exit - Exit from Node.js mode`,
+      ocr - Enter OCR mode (extract subtitles from video frames)
+      exit - Exit from Node.js or OCR mode`,
     clear: () => {
       setHistory([]);
       return '';
@@ -119,10 +122,29 @@ console.log("Hello World");
 const sum = (a, b) => a + b;
 sum(5, 3)`;
     },
+    ocr: () => {
+      setOcrMode(true);
+      setOcrUrl('');
+      setOcrLanguage('eng');
+      return `OCR mode entered. Use the following commands:
+- url [video/image URL] - Set the URL to extract subtitles from
+- language [lang] - Set OCR language (default: eng)
+- process - Start OCR processing
+- exit - Exit OCR mode
+
+Example: 
+url https://example.com/video-with-subtitles.mp4
+language ind
+process`;
+    },
     exit: () => {
       if (nodeMode) {
         setNodeMode(false);
         return 'Exited Node.js mode.';
+      }
+      if (ocrMode) {
+        setOcrMode(false);
+        return 'Exited OCR mode.';
       }
       return 'Not in a special mode to exit from.';
     },
@@ -156,11 +178,66 @@ sum(5, 3)`;
       } catch (error: any) {
         return `Failed to execute: ${error.message}`;
       }
+    },
+    url: (args: string[]) => {
+      if (!ocrMode) {
+        return 'Command only available in OCR mode. Type "ocr" to enter OCR mode.';
+      }
+      
+      if (args.length === 0) {
+        return 'Usage: url [video/image URL]';
+      }
+      
+      setOcrUrl(args.join(' '));
+      return `URL set to: ${args.join(' ')}`;
+    },
+    language: (args: string[]) => {
+      if (!ocrMode) {
+        return 'Command only available in OCR mode. Type "ocr" to enter OCR mode.';
+      }
+      
+      if (args.length === 0) {
+        return 'Usage: language [lang code]';
+      }
+      
+      setOcrLanguage(args[0]);
+      return `OCR language set to: ${args[0]}`;
+    },
+    process: async () => {
+      if (!ocrMode) {
+        return 'Command only available in OCR mode. Type "ocr" to enter OCR mode.';
+      }
+      
+      if (!ocrUrl) {
+        return 'URL not set. Use "url [video/image URL]" command first.';
+      }
+      
+      try {
+        const response = await fetch('/api/ocr-subtitle', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            url: ocrUrl,
+            language: ocrLanguage 
+          }),
+        });
+        
+        const data = await response.json();
+        
+        if (data.error) {
+          return `Error: ${data.error}`;
+        }
+        
+        return `OCR Results:\n\n${data.detected_text}\n\nLanguage: ${data.language}\nSource: ${data.source_url}\n${data.note ? '\nNote: ' + data.note : ''}`;
+      } catch (error: any) {
+        return `Failed to process OCR: ${error.message}`;
+      }
     }
   };
 
   useEffect(() => {
-    // Check if user is logged in
     const checkUser = async () => {
       const { data } = await supabase.auth.getSession();
       setUser(data.session?.user || null);
@@ -168,14 +245,12 @@ sum(5, 3)`;
       if (!data.session) {
         navigate('/auth');
       } else {
-        // Load command history
         loadHistory();
       }
     };
     
     checkUser();
     
-    // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
         setUser(session?.user || null);
@@ -190,7 +265,6 @@ sum(5, 3)`;
     };
   }, [navigate]);
   
-  // Load command history from Supabase
   const loadHistory = async () => {
     try {
       const { data, error } = await supabase
@@ -211,16 +285,11 @@ sum(5, 3)`;
     }
   };
 
-  // Execute a command
   const executeCommand = async (cmdString: string) => {
     if (!cmdString.trim()) return;
     
-    // Special handling for Node.js mode
     if (nodeMode && cmdString !== 'run' && cmdString !== 'exit') {
-      // Add the line to the Node.js code buffer
       setNodeCode(prev => prev + (prev ? '\n' : '') + cmdString);
-      
-      // Add command to history without saving to database
       const newCommand = {
         id: crypto.randomUUID(),
         command: cmdString,
@@ -228,34 +297,26 @@ sum(5, 3)`;
         executed_at: new Date().toISOString(),
         success: true
       };
-      
       setHistory(prev => [...prev, newCommand]);
       setInput('');
-      
-      // Scroll to bottom
       setTimeout(() => {
         if (terminalRef.current) {
           terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
         }
       }, 0);
-      
       return;
     }
     
     setLoading(true);
     
-    // Parse command and arguments
     const [cmd, ...args] = cmdString.split(' ');
     let output = '';
     let success = true;
     
     try {
-      // Check if it's a built-in command
       if (cmd in commands) {
-        // @ts-ignore
         output = await commands[cmd](args);
       } else {
-        // Check if it's a custom command
         const { data, error } = await supabase
           .from('custom_commands')
           .select('script')
@@ -266,9 +327,7 @@ sum(5, 3)`;
           output = `Command not found: ${cmd}. Type 'help' for available commands.`;
           success = false;
         } else {
-          // Execute custom command
           try {
-            // Here we'd typically execute the script - for safety we just return it
             output = `Custom command script: ${data.script}\nArguments: ${args.join(' ')}`;
           } catch (e: any) {
             output = `Error executing custom command: ${e.message}`;
@@ -277,7 +336,6 @@ sum(5, 3)`;
         }
       }
       
-      // Save command to history
       if (cmd !== 'clear') {
         const newCommand = {
           id: crypto.randomUUID(),
@@ -289,7 +347,6 @@ sum(5, 3)`;
         
         setHistory(prev => [...prev, newCommand]);
         
-        // Save to Supabase
         await supabase
           .from('command_history')
           .insert([{
@@ -307,7 +364,6 @@ sum(5, 3)`;
       setInput('');
       setHistoryIndex(-1);
       
-      // Scroll to bottom
       setTimeout(() => {
         if (terminalRef.current) {
           terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
@@ -316,13 +372,11 @@ sum(5, 3)`;
     }
   };
 
-  // Handle key events for command history navigation
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
       executeCommand(input);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      // Navigate up through command history
       const commandHistory = history
         .filter(item => item.command)
         .map(item => item.command);
@@ -336,7 +390,6 @@ sum(5, 3)`;
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      // Navigate down through command history
       const commandHistory = history
         .filter(item => item.command)
         .map(item => item.command);
@@ -351,7 +404,6 @@ sum(5, 3)`;
       }
     } else if (e.key === 'Tab') {
       e.preventDefault();
-      // Simple command completion
       const builtInCommands = Object.keys(commands);
       const cmdStart = input.split(' ')[0];
       
@@ -367,7 +419,6 @@ sum(5, 3)`;
     }
   };
 
-  // Focus input when clicking on terminal
   const focusInput = () => {
     if (inputRef.current) {
       inputRef.current.focus();
@@ -406,9 +457,22 @@ Welcome to Terminal Web. Type 'help' for available commands.
               </div>
             </div>
           )}
+          {ocrMode && (
+            <div className="mt-2 p-2 bg-gray-900 border border-purple-800 rounded">
+              <div className="text-purple-400 font-bold">OCR Mode</div>
+              <div className="text-gray-400 text-sm">
+                URL: {ocrUrl || 'Not set'}
+              </div>
+              <div className="text-gray-400 text-sm">
+                Language: {ocrLanguage}
+              </div>
+              <div className="text-gray-400 text-sm">
+                Type 'process' to extract subtitles, 'exit' to quit
+              </div>
+            </div>
+          )}
         </div>
         
-        {/* Command history */}
         {history.map((item, index) => (
           <div key={item.id || index} className="mb-2">
             <div className="flex">
@@ -423,7 +487,6 @@ Welcome to Terminal Web. Type 'help' for available commands.
           </div>
         ))}
         
-        {/* Command prompt */}
         <div className="flex items-center">
           <span className="text-blue-400 mr-2">$</span>
           <input
